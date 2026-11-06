@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>L17 Fahrtenbuch</title>
+<meta name="theme-color" content="#1d4f9c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="L17">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: eine schmale Spalte wie ein Fahrtenbuch im Handschuhfach; Kilometerzähler als Blickfang */
+:root{
+  --bg:#eef1f5; --surface:#ffffff; --ink:#18202b; --muted:#5d6878; --line:#d5dbe4;
+  --sign:#1d4f9c; --sign-ink:#ffffff; --signal:#f2b705; --ok:#2c7a4b; --warn:#b5520f;
+  --odo-bg:#151a21; --odo-fg:#f4f6f8;
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f141b; --surface:#18202b; --ink:#e8edf3; --muted:#9aa6b6; --line:#2a3544;
+  --sign:#4d82d6; --sign-ink:#0b1220; --signal:#f5c431; --ok:#5cbf83; --warn:#f08a4b;
+  --odo-bg:#05080c; --odo-fg:#f4f6f8; color-scheme:dark}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-top:calc(12px + env(safe-area-inset-top,0px));padding-bottom:calc(40px + env(safe-area-inset-bottom,0px))}
+[hidden]{display:none!important}
+img{max-width:100%}
+.wrap{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+h1,h2,h3{font-family:var(--f-display);margin:0;text-wrap:balance;letter-spacing:.01em}
+h2{font-size:1.45rem;font-weight:700}
+.label{font-size:.74rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.muted{color:var(--muted)} .small{font-size:.86rem}
+header.top{display:flex;align-items:center;gap:12px}
+.plate{background:var(--sign);color:var(--sign-ink);font-family:var(--f-display);font-weight:700;font-size:1.25rem;border-radius:6px;padding:4px 10px;line-height:1;border:3px solid var(--sign-ink);outline:2px solid var(--sign)}
+header.top h1{font-size:1.7rem;font-weight:700;flex:1}
+.iconbtn{background:transparent;border:1px solid var(--line);color:var(--ink);border-radius:10px;padding:8px 12px;font:inherit;font-size:.9rem;cursor:pointer}
+.progress{display:grid;gap:8px}
+.progress .nums{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.progress .big{font-family:var(--f-display);font-size:2.4rem;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.bar{height:10px;border-radius:5px;background:var(--line);overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--sign);width:0;transition:width .6s}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.card.active{border-color:var(--sign);box-shadow:0 0 0 2px var(--sign) inset}
+.stack{display:flex;flex-direction:column;gap:14px}
+.odo{display:inline-flex;gap:3px;background:var(--odo-bg);padding:6px;border-radius:8px;align-self:flex-start}
+.odo span{font-family:var(--f-mono);font-weight:600;font-size:1.6rem;color:var(--odo-fg);background:linear-gradient(#2a323d,#11161c 50%,#2a323d);width:1.35em;text-align:center;border-radius:3px;line-height:1.5}
+.odo span.unit{background:none;width:auto;font-size:.8rem;align-self:flex-end;padding:0 4px 4px;color:#aab3bf}
+.btn{appearance:none;border:0;border-radius:12px;padding:14px 18px;font:600 1.05rem var(--f-body);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-align:center}
+.btn.primary{background:var(--sign);color:var(--sign-ink)}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.danger{background:transparent;color:var(--warn);border:1px solid var(--line)}
+.btn.slim{padding:10px 14px;font-size:.95rem}
+.btn:disabled{opacity:.5;cursor:default}
+.btn:focus-visible,.iconbtn:focus-visible,.chip:focus-visible,input:focus-visible,.linkish:focus-visible{outline:3px solid var(--signal);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1 1 140px;min-width:0}
+.field{display:flex;flex-direction:column;gap:5px}
+.field input{font:500 1rem var(--f-body);padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);width:100%}
+.field input.kmin{font-family:var(--f-mono);font-size:1.3rem;font-variant-numeric:tabular-nums}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:8px 14px;font:500 .95rem var(--f-body);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--sign);color:var(--sign-ink);border-color:var(--sign)}
+.photo{display:flex;gap:12px;align-items:center}
+.photo img{width:110px;height:82px;object-fit:cover;border-radius:8px;border:1px solid var(--line);flex:none;cursor:zoom-in}
+.photo img.big{width:100%;height:auto;cursor:zoom-out}
+.photo:has(img.big){flex-direction:column;align-items:stretch}
+.status{font-size:.9rem;color:var(--muted)}
+.status.ok{color:var(--ok)} .status.warn{color:var(--warn)}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.facts div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.facts b{font-weight:600;overflow-wrap:anywhere}
+.log{display:flex;flex-direction:column}
+.log .item{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;padding:12px 0;border-top:1px solid var(--line);align-items:start}
+.log .item:first-child{border-top:0}
+.log .date{font-family:var(--f-display);font-weight:600;font-size:1.05rem;line-height:1.1;min-width:52px}
+.log .date small{display:block;color:var(--muted);font-family:var(--f-body);font-weight:500;font-size:.75rem}
+.log .main{min-width:0}
+.log .route{font-weight:600;overflow-wrap:anywhere}
+.log .km{font-family:var(--f-mono);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.log .edit{grid-column:1/-1}
+.linkish{background:none;border:0;color:var(--sign);font:500 .9rem var(--f-body);cursor:pointer;padding:0;text-align:left}
+.empty{padding:14px;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:500;z-index:20;max-width:calc(100% - 32px)}
+.note{font-size:.85rem;color:var(--muted);border-left:3px solid var(--signal);padding-left:10px;margin:0}
+footer{font-size:.78rem;color:var(--muted);text-align:center}
+footer a{color:inherit}
+@media (prefers-reduced-motion:reduce){.bar>i{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <span class="plate" aria-hidden="true">L17</span>
+    <h1>Fahrtenbuch</h1>
+    <button class="iconbtn" id="btnSettings" type="button">Daten</button>
+  </header>
+
+  <section class="progress" aria-label="Fortschritt">
+    <div class="nums">
+      <div><div class="label">Gefahren gesamt</div><div class="big" id="totalKm">0 km</div></div>
+      <div class="muted small" id="totalMeta">Ziel: 3.000 km</div>
+    </div>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="3000" id="bar"><i id="barFill"></i></div>
+  </section>
+
+  <section class="card" id="settings" hidden>
+    <h2>Bewerber &amp; Standardauto</h2>
+    <div class="field"><label class="label" for="sName">Bewerber</label><input id="sName" autocomplete="name"></div>
+    <div class="row">
+      <div class="field"><label class="label" for="sPhone">Telefonnummer</label><input id="sPhone" inputmode="tel" autocomplete="tel"></div>
+      <div class="field"><label class="label" for="sBirth">Geburtsdatum</label><input id="sBirth" placeholder="TT.MM.JJJJ"></div>
+    </div>
+    <div class="field"><label class="label" for="sPlate">Standard-Kennzeichen</label><input id="sPlate" placeholder="z. B. DO-123AB" autocapitalize="characters"></div>
+    <div class="row"><button class="btn primary" id="btnSaveSettings" type="button">Speichern</button><button class="btn ghost" id="btnCloseSettings" type="button">Schließen</button></div>
+    <hr style="border:0;border-top:1px solid var(--line);width:100%;margin:4px 0">
+    <h2>Sicherung</h2>
+    <p class="note">Die Fahrten liegen nur auf diesem Handy. Speichere ab und zu eine Sicherung, z. B. in deine Cloud oder per Mail an dich selbst.</p>
+    <div class="row">
+      <button class="btn ghost slim" id="btnBackup" type="button">Sicherung speichern</button>
+      <button class="btn ghost slim" id="btnRestore" type="button">Sicherung laden</button>
+    </div>
+    <input type="file" id="fileRestore" accept="application/json,.json" hidden>
+  </section>
+
+  <!-- Start -->
+  <section class="card" id="startCard">
+    <h2>Neue Fahrt</h2>
+    <p class="muted small">Beim Einsteigen: Foto vom Kilometerstand. Standort und Tageszeit werden dabei automatisch erfasst.</p>
+    <input type="file" accept="image/*" capture="environment" id="fileStart" hidden>
+    <button class="btn primary" id="btnPhotoStart" type="button">Foto Kilometerstand (Start)</button>
+    <div id="startForm" class="stack" hidden>
+      <div class="photo"><img id="imgStart" alt="Foto Kilometerstand Start"><div class="status" id="ocrStart"></div></div>
+      <div class="field"><label class="label" for="kmStart">Kilometerstand von</label><input id="kmStart" class="kmin" inputmode="numeric"></div>
+      <div class="field"><span class="label">Kennzeichen</span>
+        <div class="chips" id="plateChips">
+          <button type="button" class="chip" data-p="std" aria-pressed="true" id="chipStd">Standard</button>
+          <button type="button" class="chip" data-p="other" aria-pressed="false">Anderes Auto</button>
+        </div>
+        <div class="field"><input id="plateOther" placeholder="Kennzeichen eingeben" autocapitalize="characters" hidden></div>
+      </div>
+      <div class="facts">
+        <div><span class="label">Datum, Uhrzeit</span><b id="factWhen">–</b></div>
+        <div><span class="label">Tageszeit</span><b id="factDaytime">–</b></div>
+        <div><span class="label">Startort</span><b id="factPlace">wird ermittelt…</b></div>
+      </div>
+      <div class="row"><button class="btn primary" id="btnBeginTrip" type="button">Fahrt beginnen</button><button class="btn ghost" id="btnCancelStart" type="button">Verwerfen</button></div>
+    </div>
+  </section>
+
+  <!-- Laufende Fahrt -->
+  <section class="card active" id="activeCard" hidden>
+    <div class="label">Fahrt läuft</div>
+    <div class="odo" id="odoActive"></div>
+    <div class="facts">
+      <div><span class="label">Start</span><b id="actTime">–</b></div>
+      <div><span class="label">Kennzeichen</span><b id="actPlate">–</b></div>
+      <div><span class="label">Startort</span><b id="actPlace">–</b></div>
+    </div>
+    <input type="file" accept="image/*" capture="environment" id="fileEnd" hidden>
+    <button class="btn primary" id="btnPhotoEnd" type="button">Angekommen: Foto Kilometerstand</button>
+    <div id="endForm" class="stack" hidden>
+      <div class="photo"><img id="imgEnd" alt="Foto Kilometerstand Ende"><div class="status" id="ocrEnd"></div></div>
+      <div class="field"><label class="label" for="kmEnd">Kilometerstand bis</label><input id="kmEnd" class="kmin" inputmode="numeric"></div>
+      <div class="status" id="diffInfo"></div>
+      <div class="field"><label class="label" for="route">Fahrtstrecke / -ziel</label><input id="route" placeholder="z. B. Dornbirn – Bregenz"></div>
+      <div class="status" id="routeInfo"></div>
+      <div class="field"><span class="label">Witterung</span><div class="chips" id="wxChips"></div></div>
+      <div class="field"><span class="label">Straßenzustand</span><div class="chips" id="roadChips"></div></div>
+      <div class="status" id="wxInfo"></div>
+      <div class="row"><button class="btn primary" id="btnFinish" type="button">Fahrt speichern</button><button class="btn ghost" id="btnCancelEnd" type="button">Zurück</button></div>
+    </div>
+    <button class="linkish" id="btnAbort" type="button">Laufende Fahrt abbrechen</button>
+  </section>
+
+  <!-- Protokoll -->
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <h2>Protokoll</h2>
+      <button class="btn ghost slim" id="btnPdf" type="button">PDF erstellen</button>
+    </div>
+    <div class="log" id="log"></div>
+    <p class="note">Die Unterschriften von Begleiter und Bewerber bleiben frei und werden auf dem Ausdruck händisch gesetzt.</p>
+  </section>
+
+  <footer>Wetter: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · Orte: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende</footer>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
