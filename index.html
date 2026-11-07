@@ -70,10 +70,10 @@ header.top h1{font-size:1.7rem;font-weight:700;flex:1}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:8px 14px;font:500 .95rem var(--f-body);cursor:pointer}
 .chip[aria-pressed="true"]{background:var(--sign);color:var(--sign-ink);border-color:var(--sign)}
-.photo{display:flex;gap:12px;align-items:center}
-.photo img{width:110px;height:82px;object-fit:cover;border-radius:8px;border:1px solid var(--line);flex:none;cursor:zoom-in}
-.photo img.big{width:100%;height:auto;cursor:zoom-out}
-.photo:has(img.big){flex-direction:column;align-items:stretch}
+.photo{display:flex;flex-direction:column;gap:8px}
+.shot{position:relative;border-radius:10px;overflow:hidden;border:1px solid var(--line);background:var(--odo-bg);cursor:crosshair;touch-action:manipulation}
+.shot img{display:block;width:100%;height:auto;max-height:60vh;object-fit:contain}
+.shot .mark{position:absolute;border:3px solid var(--signal);border-radius:6px;box-shadow:0 0 0 2000px rgba(0,0,0,.35);pointer-events:none;transform:translate(-50%,-50%)}
 .status{font-size:.9rem;color:var(--muted)}
 .status.ok{color:var(--ok)} .status.warn{color:var(--warn)}
 .facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
@@ -135,11 +135,11 @@ footer a{color:inherit}
   <!-- Start -->
   <section class="card" id="startCard">
     <h2>Neue Fahrt</h2>
-    <p class="muted small">Beim Einsteigen: Foto vom Kilometerstand. Standort und Tageszeit werden dabei automatisch erfasst.</p>
+    <p class="muted small">Beim Einsteigen: Foto vom Kilometerstand. Standort und Tageszeit werden dabei automatisch erfasst. Wird die Zahl nicht erkannt, tippe im Foto direkt auf sie.</p>
     <input type="file" accept="image/*" capture="environment" id="fileStart" hidden>
     <button class="btn primary" id="btnPhotoStart" type="button">Foto Kilometerstand (Start)</button>
     <div id="startForm" class="stack" hidden>
-      <div class="photo"><img id="imgStart" alt="Foto Kilometerstand Start"><div class="status" id="ocrStart"></div></div>
+      <div class="photo"><div class="shot" id="shotStart"><img id="imgStart" alt="Foto Kilometerstand Start"><div class="mark" hidden></div></div><div class="status" id="ocrStart"></div></div>
       <div class="field"><label class="label" for="kmStart">Kilometerstand von</label><input id="kmStart" class="kmin" inputmode="numeric"></div>
       <div class="field"><span class="label">Kennzeichen</span>
         <div class="chips" id="plateChips">
@@ -169,7 +169,7 @@ footer a{color:inherit}
     <input type="file" accept="image/*" capture="environment" id="fileEnd" hidden>
     <button class="btn primary" id="btnPhotoEnd" type="button">Angekommen: Foto Kilometerstand</button>
     <div id="endForm" class="stack" hidden>
-      <div class="photo"><img id="imgEnd" alt="Foto Kilometerstand Ende"><div class="status" id="ocrEnd"></div></div>
+      <div class="photo"><div class="shot" id="shotEnd"><img id="imgEnd" alt="Foto Kilometerstand Ende"><div class="mark" hidden></div></div><div class="status" id="ocrEnd"></div></div>
       <div class="field"><label class="label" for="kmEnd">Kilometerstand bis</label><input id="kmEnd" class="kmin" inputmode="numeric"></div>
       <div class="status" id="diffInfo"></div>
       <div class="field"><label class="label" for="route">Fahrtstrecke / -ziel</label><input id="route" placeholder="z. B. Dornbirn – Bregenz"></div>

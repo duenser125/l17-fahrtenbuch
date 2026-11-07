@@ -82,51 +82,127 @@ async function readPhoto(file){
 }
 
 /* ---------------- Kilometerstand lesen (Texterkennung auf dem Handy) ---------------- */
-let ocrWorker=null;
+// Ablauf: zuerst das ganze Foto; klappt das nicht, tippt man im Foto auf die Zahl
+// und es wird nur dieser Ausschnitt (in voller Auflösung, vergrößert, schwarz/weiß) gelesen.
+let ocrWorker=null,ocrQueue=Promise.resolve();
 async function getWorker(){
   if(ocrWorker)return ocrWorker;
   if(!window.Tesseract)throw new Error("no-ocr");
   ocrWorker=await Tesseract.createWorker("eng");
-  await ocrWorker.setParameters({tessedit_char_whitelist:"0123456789 ",tessedit_pageseg_mode:"11"});
+  await ocrWorker.setParameters({tessedit_char_whitelist:"0123456789"});
   return ocrWorker;
 }
-function prepImage(url,invert){
-  return new Promise((res,rej)=>{const im=new Image();im.onload=()=>{
-    const s=Math.min(1,1400/Math.max(im.width,im.height)),c=document.createElement("canvas");
-    c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);const x=c.getContext("2d");x.drawImage(im,0,0,c.width,c.height);
-    const d=x.getImageData(0,0,c.width,c.height),p=d.data;let sum=0;
-    for(let i=0;i<p.length;i+=4){const g=0.299*p[i]+0.587*p[i+1]+0.114*p[i+2];p[i]=p[i+1]=p[i+2]=g;sum+=g}
-    const mean=sum/(p.length/4),inv=invert==null?mean<110:invert;
-    for(let i=0;i<p.length;i+=4){let g=p[i];g=(g-mean)*1.8+128;if(inv)g=255-g;g=g<0?0:g>255?255:g;p[i]=p[i+1]=p[i+2]=g}
-    x.putImageData(d,0,0);res({canvas:c,inverted:inv})};im.onerror=rej;im.src=url});
+function loadImg(url){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url})}
+// Ausschnitt → Graustufen → vergrößern → Otsu-Schwelle → dunkle Ziffern auf weiß, mit Rand
+function prepCrop(im,cx,cy,cw,ch,targetH,thicken){
+  const sx=Math.max(0,cx-cw/2),sy=Math.max(0,cy-ch/2),w=Math.min(im.naturalWidth-sx,cw),h=Math.min(im.naturalHeight-sy,ch);
+  const sc=targetH/h,W=Math.max(1,Math.round(w*sc)),H=Math.max(1,Math.round(h*sc)),P=24;
+  const c=document.createElement("canvas");c.width=W+2*P;c.height=H+2*P;const x=c.getContext("2d",{willReadFrequently:true});
+  x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.imageSmoothingQuality="high";x.drawImage(im,sx,sy,w,h,P,P,W,H);
+  const d=x.getImageData(P,P,W,H),p=d.data,n=W*H,g=new Uint8Array(n),hist=new Array(256).fill(0);
+  for(let i=0;i<n;i++){const v=Math.round(0.299*p[i*4]+0.587*p[i*4+1]+0.114*p[i*4+2]);g[i]=v;hist[v]++}
+  let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
+  let sB=0,wB=0,best=0,thr=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
+    const mB=sB/wB,mF=(sum-sB)/wF,v=wB*wF*(mB-mF)*(mB-mF);if(v>best){best=v;thr=t}}
+  let dark=0;for(let i=0;i<n;i++)if(g[i]<=thr)dark++;
+  const inv=dark>n/2; // Ziffern sind die Minderheit: hell auf dunkel → umdrehen
+  let bin=new Uint8Array(n);for(let i=0;i<n;i++){const isDark=g[i]<=thr;bin[i]=(isDark!==inv)?0:255}
+  for(let k=0;k<(thicken||0);k++){const o=new Uint8Array(bin);for(let y=1;y<H-1;y++)for(let X=1;X<W-1;X++){const i=y*W+X;
+    if(o[i-1]===0||o[i+1]===0||o[i-W]===0||o[i+W]===0)bin[i]=0}}
+  for(let i=0;i<n;i++){p[i*4]=p[i*4+1]=p[i*4+2]=bin[i];p[i*4+3]=255}
+  x.putImageData(d,P,P);return c;
 }
-function pickKm(texts,ref){
-  const cands=new Set();
-  for(const t of texts){
-    (t.match(/\d{4,7}/g)||[]).forEach(n=>cands.add(+n));
-    (t.match(/\d{1,3}[ .]\d{3}/g)||[]).forEach(n=>cands.add(+n.replace(/\D/g,"")));
-  }
-  let list=[...cands].filter(n=>n>=100);
-  if(!list.length)return null;
+function digitRuns(text){
+  const out=[];
+  (text.match(/\d{4,7}/g)||[]).forEach(n=>out.push(n));
+  (text.match(/\b\d{1,3}[ .]\d{3}\b/g)||[]).forEach(n=>out.push(n.replace(/\D/g,"")));
+  return out;
+}
+// Mehrere Lesedurchgänge: häufigste Länge bestimmen, dann jede Stelle einzeln per Mehrheit
+function consensus(runs){
+  const byLen={};runs.forEach(r=>{if(r.length>=5&&r.length<=7)(byLen[r.length]=byLen[r.length]||[]).push(r)});
+  const L=Object.keys(byLen).sort((a,b)=>byLen[b].length-byLen[a].length||b-a)[0];if(!L)return null;
+  const rs=byLen[L];let out="",agree=1;
+  for(let i=0;i<L;i++){const c={};rs.forEach(r=>c[r[i]]=(c[r[i]]||0)+1);const [d,k]=Object.entries(c).sort((a,b)=>b[1]-a[1])[0];out+=d;agree=Math.min(agree,k/rs.length)}
+  return {km:parseInt(out,10),n:rs.length,agree};
+}
+function decide(runs,ref){
+  const nums=[...new Set(runs.map(Number))].filter(n=>n>=100),con=consensus(runs);
+  if(!nums.length&&!con)return null;
   if(ref!=null){
-    const ok=list.filter(n=>n>=ref&&n-ref<2000).sort((a,b)=>a-b);
-    if(ok.length)return {km:ok[0],sure:true};
-    return {km:list.sort((a,b)=>Math.abs(a-ref)-Math.abs(b-ref))[0],sure:false};
+    const inRange=n=>n>=ref&&n-ref<3000;
+    if(con&&inRange(con.km))return {km:con.km,sure:true};
+    const ok=nums.filter(inRange).sort((a,b)=>runs.filter(r=>+r===b).length-runs.filter(r=>+r===a).length||a-b);
+    if(ok.length)return {km:ok[0],sure:runs.filter(r=>+r===ok[0]).length>=2};
+    const any=con?con.km:nums.sort((a,b)=>Math.abs(a-ref)-Math.abs(b-ref))[0];
+    return {km:any,sure:false};
   }
-  return {km:list.sort((a,b)=>String(b).length-String(a).length||b-a)[0],sure:false};
+  if(con)return {km:con.km,sure:con.n>=3&&con.agree>=0.6};
+  return {km:nums.sort((a,b)=>String(b).length-String(a).length)[0],sure:false};
 }
-async function ocrKm(url,statusEl,inputEl,ref){
+async function runPasses(im,passes,ref,abort,whole){
+  const w=await getWorker(),runs=[];
+  for(const ps of passes){
+    if(abort())return null;
+    await w.setParameters({tessedit_pageseg_mode:ps.psm});
+    const r=await w.recognize(ps.canvas());
+    digitRuns(r.data.text).forEach(n=>runs.push(n));
+    if(ref!=null&&runs.length>=4){const d=decide(runs,ref);if(d&&d.sure)return d}
+  }
+  const d=decide(runs,ref);
+  if(d&&whole&&ref==null)d.sure=false; // ganzes Foto ohne Vorwert: immer bestätigen lassen
+  return d;
+}
+function ocrJob(fn){const p=ocrQueue.then(fn,fn);ocrQueue=p.catch(()=>{});return p}
+function showResult(hit,statusEl,inputEl,fromTap){
+  if(hit){inputEl.value=hit.km;inputEl.dispatchEvent(new Event("input"));
+    setStatus(statusEl,(hit.sure?"Erkannt: ":"Vermutlich: ")+fmtKm(hit.km)+(hit.sure?". Bitte kurz mit dem Foto vergleichen.":". Stimmt das nicht, tippe genauer auf die Zahl oder gib sie ein."),hit.sure?"ok":"warn")}
+  else setStatus(statusEl,fromTap?"Hier keine Zahl gefunden. Tippe genau auf die Mitte der Kilometerzahl oder gib sie ein.":"Nicht automatisch gefunden. Tippe im Foto auf die Kilometerzahl.","warn");
+}
+async function ocrWhole(draft,statusEl,inputEl,ref){
   setStatus(statusEl,"Lese Kilometerstand vom Foto…");
   try{
-    const w=await getWorker();
-    const a=await prepImage(url,null),r1=await w.recognize(a.canvas);
-    const texts=[r1.data.text];
-    let hit=pickKm(texts,ref);
-    if(!hit||!hit.sure){const b=await prepImage(url,!a.inverted),r2=await w.recognize(b.canvas);texts.push(r2.data.text);hit=pickKm(texts,ref)}
-    if(hit&&!inputEl.value){inputEl.value=hit.km;inputEl.dispatchEvent(new Event("input"))}
-    if(hit)setStatus(statusEl,(hit.sure?"Erkannt: ":"Vermutlich: ")+fmtKm(hit.km)+" – bitte mit dem Foto vergleichen.",hit.sure?"ok":"warn");
-    else setStatus(statusEl,"Nicht lesbar. Bitte eintippen (Foto antippen zum Vergrößern).","warn");
-  }catch(e){setStatus(statusEl,"Texterkennung nicht verfügbar. Bitte eintippen.","warn")}
+    const im=await loadImg(draft.url);draft.img=im;
+    const W=im.naturalWidth,H=im.naturalHeight,abort=()=>draft.tapped;
+    // ganzes Bild + mittlere Bildhälfte (dort ist der Zähler meistens)
+    const passes=[
+      {psm:"11",canvas:()=>prepCrop(im,W/2,H/2,W,H,Math.min(1600,H),false)},
+      {psm:"11",canvas:()=>prepCrop(im,W/2,H*0.55,W*0.6,H*0.6,Math.min(1400,H*0.6*1.5),false)}];
+    const hit=await ocrJob(()=>runPasses(im,passes,ref,abort,true));
+    if(draft.tapped)return;
+    if(hit&&hit.sure)showResult(hit,statusEl,inputEl,false);
+    else{
+      setStatus(statusEl,"Tippe im Foto genau auf die Kilometerzahl, dann lese ich nur diese Stelle.","warn")}
+  }catch(e){setStatus(statusEl,"Texterkennung konnte nicht laden (Internet?). Bitte eintippen.","warn")}
+}
+async function ocrTap(draft,fx,fy,statusEl,inputEl,ref){
+  draft.tapped=(draft.tapped||0)+1;const my=draft.tapped;
+  setStatus(statusEl,"Lese die markierte Stelle…");
+  try{
+    const im=draft.img||await loadImg(draft.url);draft.img=im;
+    const W=im.naturalWidth,H=im.naturalHeight,cx=fx*W,cy=fy*H,base=Math.min(W,H);
+    const passes=[];
+    for(const [wf,hf] of [[0.45,0.13],[0.6,0.17],[0.32,0.10]])
+      for(const [th,tk,psm] of [[100,0,"7"],[100,1,"7"],[140,0,"13"],[70,1,"7"],[140,2,"7"],[100,0,"6"]]){
+        const cw=base*wf,ch=base*hf;passes.push({psm,canvas:()=>prepCrop(im,cx,cy,cw,ch,th,tk)});
+      }
+    const hit=await ocrJob(()=>runPasses(im,passes,ref,()=>draft.tapped!==my));
+    if(draft.tapped!==my)return;
+    showResult(hit,statusEl,inputEl,true);
+  }catch(e){setStatus(statusEl,"Texterkennung konnte nicht laden (Internet?). Bitte eintippen.","warn")}
+}
+function wireShot(shotId,getDraft,statusEl,inputEl,getRef){
+  const shot=$(shotId),mark=shot.querySelector(".mark");
+  shot.addEventListener("click",e=>{
+    const d=getDraft();if(!d)return;const img=shot.querySelector("img"),r=img.getBoundingClientRect();
+    // Position im tatsächlich angezeigten Bild (object-fit: contain)
+    const nw=img.naturalWidth,nh=img.naturalHeight;if(!nw)return;
+    const s=Math.min(r.width/nw,r.height/nh),dw=nw*s,dh=nh*s,ox=(r.width-dw)/2,oy=(r.height-dh)/2;
+    const fx=(e.clientX-r.left-ox)/dw,fy=(e.clientY-r.top-oy)/dh;if(fx<0||fx>1||fy<0||fy>1)return;
+    const base=Math.min(nw,nh)*s;mark.style.width=base*0.55+"px";mark.style.height=base*0.16+"px";
+    mark.style.left=(e.clientX-r.left)+"px";mark.style.top=(e.clientY-r.top)+"px";mark.hidden=false;
+    ocrTap(d,fx,fy,statusEl,inputEl,getRef());
+  });
 }
 function lastKm(plate){const t=state.trips.filter(x=>x.plate===plate);return t.length?Math.max(...t.map(x=>x.kmTo)):null}
 
@@ -165,7 +241,6 @@ async function fetchWeather(points,startMs,endMs){
 /* ---------------- Anzeige ---------------- */
 function odo(el,km){el.innerHTML="";String(km).padStart(6,"0").split("").forEach(c=>{const s=document.createElement("span");s.textContent=c;el.append(s)});const u=document.createElement("span");u.className="unit";u.textContent="km";el.append(u)}
 function chips(el,list,sel,onPick){el.innerHTML="";list.forEach(v=>{const b=document.createElement("button");b.type="button";b.className="chip";b.textContent=v;b.setAttribute("aria-pressed",String(sel.includes(v)));b.onclick=()=>onPick(v);el.append(b)})}
-document.querySelectorAll(".photo img").forEach(im=>im.onclick=()=>im.classList.toggle("big"));
 
 function render(){
   const total=state.trips.reduce((s,t)=>s+(t.kmTo-t.kmFrom),0);
@@ -224,6 +299,9 @@ async function deliver(blob,name){
 }
 
 /* ---------------- Fahrt starten ---------------- */
+function startRef(){const plate=plateMode==="std"?state.settings.plate:$("plateOther").value.trim().toUpperCase();return plate?lastKm(plate):null}
+wireShot("shotStart",()=>draftStart,$("ocrStart"),$("kmStart"),startRef);
+wireShot("shotEnd",()=>draftEnd,$("ocrEnd"),$("kmEnd"),()=>state.active?state.active.kmFrom+1:null);
 let plateMode="std";
 $("plateChips").onclick=e=>{const b=e.target.closest(".chip");if(!b)return;plateMode=b.dataset.p;
   [...$("plateChips").children].forEach(c=>c.setAttribute("aria-pressed",String(c===b)));$("plateOther").hidden=plateMode!=="other";if(plateMode==="other")$("plateOther").focus()};
@@ -231,12 +309,12 @@ let gpsStartP=null;
 $("btnPhotoStart").onclick=()=>{$("fileStart").click();gpsStartP=getPosition()};
 $("fileStart").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   const ph=await readPhoto(f);draftStart={...ph,gps:null,place:null};
-  $("imgStart").src=ph.url;$("imgStart").classList.remove("big");$("kmStart").value="";
+  $("imgStart").src=ph.url;$("shotStart").querySelector(".mark").hidden=true;$("kmStart").value="";
   $("factWhen").textContent=fmtDate(ph.when)+", "+fmtTime(ph.when);$("factDaytime").textContent=daytime(ph.when,null);$("factPlace").textContent="wird ermittelt…";
   $("startForm").hidden=false;$("btnPhotoStart").textContent="Anderes Foto aufnehmen";$("btnPhotoStart").className="btn ghost";
   const plate=plateMode==="std"?state.settings.plate:"";
-  ocrKm(ph.url,$("ocrStart"),$("kmStart"),plate?lastKm(plate):null);
   const my=draftStart;
+  ocrWhole(my,$("ocrStart"),$("kmStart"),startRef());
   const gps=(await (gpsStartP||getPosition()))||ph.exifGps;if(draftStart!==my)return;
   my.gps=gps;$("factDaytime").textContent=daytime(ph.when,gps);
   if(!gps){$("factPlace").textContent="kein Standort (Ortungsdienste erlauben)";return}
@@ -263,9 +341,9 @@ let gpsEndP=null;
 $("btnPhotoEnd").onclick=()=>{$("fileEnd").click();gpsEndP=getPosition()};
 $("fileEnd").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   const ph=await readPhoto(f),act=state.active;draftEnd={...ph,gps:null};const my=draftEnd;
-  $("imgEnd").src=ph.url;$("imgEnd").classList.remove("big");$("kmEnd").value="";$("route").value="";$("diffInfo").textContent="";
+  $("imgEnd").src=ph.url;$("shotEnd").querySelector(".mark").hidden=true;$("kmEnd").value="";$("route").value="";$("diffInfo").textContent="";
   wxSel=[];roadSel=[];drawChips();$("endForm").hidden=false;$("btnPhotoEnd").textContent="Anderes Foto aufnehmen";$("btnPhotoEnd").className="btn ghost";
-  ocrKm(ph.url,$("ocrEnd"),$("kmEnd"),act.kmFrom+1);
+  ocrWhole(my,$("ocrEnd"),$("kmEnd"),act.kmFrom+1);
   setStatus($("routeInfo"),"Ermittle Zielort…");setStatus($("wxInfo"),"Frage Wetter ab…");
   const gps=(await (gpsEndP||getPosition()))||ph.exifGps;if(draftEnd!==my)return;my.gps=gps;
   // Strecke
