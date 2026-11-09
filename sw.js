@@ -1,5 +1,5 @@
 // Offline-Cache: eigene Dateien zuerst aus dem Netz (damit Updates ankommen), Bibliotheken aus dem Cache
-const CACHE="l17-v2";
+const CACHE="l17-v3";
 const OWN=["./","index.html","app.js","vorlage.pdf","manifest.webmanifest","icon.svg","icon-180.png","icon-512.png"];
 const LIBS=["https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js","https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"];
 self.addEventListener("install",e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(OWN).then(()=>Promise.all(LIBS.map(u=>c.add(u).catch(()=>{}))))));self.skipWaiting()});

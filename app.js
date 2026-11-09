@@ -89,28 +89,48 @@ async function getWorker(){
   if(ocrWorker)return ocrWorker;
   if(!window.Tesseract)throw new Error("no-ocr");
   ocrWorker=await Tesseract.createWorker("eng");
-  await ocrWorker.setParameters({tessedit_char_whitelist:"0123456789"});
   return ocrWorker;
 }
 function loadImg(url){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url})}
 // Ausschnitt → Graustufen → vergrößern → Otsu-Schwelle → dunkle Ziffern auf weiß, mit Rand
-function prepCrop(im,cx,cy,cw,ch,targetH,thicken){
+function prepCrop(im,cx,cy,cw,ch,targetH,thicken,localR){
   const sx=Math.max(0,cx-cw/2),sy=Math.max(0,cy-ch/2),w=Math.min(im.naturalWidth-sx,cw),h=Math.min(im.naturalHeight-sy,ch);
   const sc=targetH/h,W=Math.max(1,Math.round(w*sc)),H=Math.max(1,Math.round(h*sc)),P=24;
   const c=document.createElement("canvas");c.width=W+2*P;c.height=H+2*P;const x=c.getContext("2d",{willReadFrequently:true});
   x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.imageSmoothingQuality="high";x.drawImage(im,sx,sy,w,h,P,P,W,H);
   const d=x.getImageData(P,P,W,H),p=d.data,n=W*H,g=new Uint8Array(n),hist=new Array(256).fill(0);
   for(let i=0;i<n;i++){const v=Math.round(0.299*p[i*4]+0.587*p[i*4+1]+0.114*p[i*4+2]);g[i]=v;hist[v]++}
-  let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
-  let sB=0,wB=0,best=0,thr=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
-    const mB=sB/wB,mF=(sum-sB)/wF,v=wB*wF*(mB-mF)*(mB-mF);if(v>best){best=v;thr=t}}
-  let dark=0;for(let i=0;i<n;i++)if(g[i]<=thr)dark++;
-  const inv=dark>n/2; // Ziffern sind die Minderheit: hell auf dunkel → umdrehen
-  let bin=new Uint8Array(n);for(let i=0;i<n;i++){const isDark=g[i]<=thr;bin[i]=(isDark!==inv)?0:255}
+  let bin=new Uint8Array(n);
+  if(localR){
+    // Lokale Schwelle: Schrift ist deutlich heller (oder dunkler) als ihre Umgebung – hilft bei Bildschirmen mit Moiré
+    const I=new Float64Array((W+1)*(H+1));
+    for(let y=0;y<H;y++){let row=0;for(let X=0;X<W;X++){row+=g[y*W+X];I[(y+1)*(W+1)+X+1]=I[y*(W+1)+X+1]+row}}
+    let tot=0;for(let i=0;i<n;i++)tot+=g[i];const light=tot/n<128,T=22;
+    for(let y=0;y<H;y++){const y0=Math.max(0,y-localR),y1=Math.min(H,y+localR+1);
+      for(let X=0;X<W;X++){const x0=Math.max(0,X-localR),x1=Math.min(W,X+localR+1);
+        const m=(I[y1*(W+1)+x1]-I[y0*(W+1)+x1]-I[y1*(W+1)+x0]+I[y0*(W+1)+x0])/((y1-y0)*(x1-x0));
+        const v=g[y*W+X];bin[y*W+X]=(light?v-m>T:m-v>T)?0:255}}
+  }else{
+    let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];
+    let sB=0,wB=0,best=0,thr=128;for(let t=0;t<256;t++){wB+=hist[t];if(!wB)continue;const wF=n-wB;if(!wF)break;sB+=t*hist[t];
+      const mB=sB/wB,mF=(sum-sB)/wF,v=wB*wF*(mB-mF)*(mB-mF);if(v>best){best=v;thr=t}}
+    let dark=0;for(let i=0;i<n;i++)if(g[i]<=thr)dark++;
+    const inv=dark>n/2; // Ziffern sind die Minderheit: hell auf dunkel → umdrehen
+    for(let i=0;i<n;i++){const isDark=g[i]<=thr;bin[i]=(isDark!==inv)?0:255}
+  }
   for(let k=0;k<(thicken||0);k++){const o=new Uint8Array(bin);for(let y=1;y<H-1;y++)for(let X=1;X<W-1;X++){const i=y*W+X;
     if(o[i-1]===0||o[i+1]===0||o[i-W]===0||o[i+W]===0)bin[i]=0}}
   for(let i=0;i<n;i++){p[i*4]=p[i*4+1]=p[i*4+2]=bin[i];p[i*4+3]=255}
   x.putImageData(d,P,P);return c;
+}
+// Text mit Beschriftung: „Kilometerzähler 6.801 km“, „ODO 45210 km“, „Gesamt …“
+function kmFromText(text){
+  const t=text.replace(/\s+/g," "),tagged=[],labeled=[];
+  const re=/(\d{1,3}(?:[.,'’ ] ?\d{3})+|\d{3,7}) ?km\b/gi;let m;
+  while((m=re.exec(t))){const n=parseInt(m[1].replace(/\D/g,""),10);tagged.push(n);
+    const before=t.slice(Math.max(0,m.index-45),m.index);
+    if(/kilometer|km.?stand|odo|gesamt|total|tachostand/i.test(before)&&!/trip|tages|reise|seit|reichweite|range/i.test(before))labeled.push(n)}
+  return {tagged,labeled};
 }
 function digitRuns(text){
   const out=[];
@@ -120,17 +140,25 @@ function digitRuns(text){
 }
 // Mehrere Lesedurchgänge: häufigste Länge bestimmen, dann jede Stelle einzeln per Mehrheit
 function consensus(runs){
-  const byLen={};runs.forEach(r=>{if(r.length>=5&&r.length<=7)(byLen[r.length]=byLen[r.length]||[]).push(r)});
+  const byLen={};runs.forEach(r=>{if(r.length>=4&&r.length<=7)(byLen[r.length]=byLen[r.length]||[]).push(r)});
   const L=Object.keys(byLen).sort((a,b)=>byLen[b].length-byLen[a].length||b-a)[0];if(!L)return null;
   const rs=byLen[L];let out="",agree=1;
   for(let i=0;i<L;i++){const c={};rs.forEach(r=>c[r[i]]=(c[r[i]]||0)+1);const [d,k]=Object.entries(c).sort((a,b)=>b[1]-a[1])[0];out+=d;agree=Math.min(agree,k/rs.length)}
   return {km:parseInt(out,10),n:rs.length,agree};
 }
-function decide(runs,ref){
+function mostCommon(list){const c={};list.forEach(n=>c[n]=(c[n]||0)+1);return list.length?+Object.entries(c).sort((a,b)=>b[1]-a[1])[0][0]:null}
+function decide(runs,ref,txt){
+  const inRange=n=>ref==null||(n>=ref&&n-ref<3000);
+  if(txt){
+    // dreistellige Treffer sind oft abgeschnitten („6.801“ → „801“): nur akzeptieren, wenn nichts Längeres da ist
+    const lab=txt.labeled.filter(inRange),big=lab.filter(n=>n>=1000);
+    if(big.length)return {km:mostCommon(big),sure:true};
+    if(lab.length&&ref!=null)return {km:mostCommon(lab),sure:true};
+    if(ref!=null){const tg=txt.tagged.filter(inRange);if(tg.length)return {km:mostCommon(tg),sure:true}}
+  }
   const nums=[...new Set(runs.map(Number))].filter(n=>n>=100),con=consensus(runs);
   if(!nums.length&&!con)return null;
   if(ref!=null){
-    const inRange=n=>n>=ref&&n-ref<3000;
     if(con&&inRange(con.km))return {km:con.km,sure:true};
     const ok=nums.filter(inRange).sort((a,b)=>runs.filter(r=>+r===b).length-runs.filter(r=>+r===a).length||a-b);
     if(ok.length)return {km:ok[0],sure:runs.filter(r=>+r===ok[0]).length>=2};
@@ -141,16 +169,18 @@ function decide(runs,ref){
   return {km:nums.sort((a,b)=>String(b).length-String(a).length)[0],sure:false};
 }
 async function runPasses(im,passes,ref,abort,whole){
-  const w=await getWorker(),runs=[];
+  const w=await getWorker(),runs=[],txt={tagged:[],labeled:[]};
   for(const ps of passes){
     if(abort())return null;
-    await w.setParameters({tessedit_pageseg_mode:ps.psm});
+    await w.setParameters({tessedit_pageseg_mode:ps.psm,tessedit_char_whitelist:ps.text?"":"0123456789"});
     const r=await w.recognize(ps.canvas());
-    digitRuns(r.data.text).forEach(n=>runs.push(n));
-    if(ref!=null&&runs.length>=4){const d=decide(runs,ref);if(d&&d.sure)return d}
+    if(ps.text){const k=kmFromText(r.data.text);txt.tagged.push(...k.tagged);txt.labeled.push(...k.labeled)}
+    else digitRuns(r.data.text).forEach(n=>runs.push(n));
+    const d=decide(runs,ref,txt);
+    if(d&&d.sure&&(ps.text||(ref!=null&&runs.length>=4)))return d;
   }
-  const d=decide(runs,ref);
-  if(d&&whole&&ref==null)d.sure=false; // ganzes Foto ohne Vorwert: immer bestätigen lassen
+  const d=decide(runs,ref,txt);
+  if(d&&whole&&ref==null&&!txt.labeled.some(n=>n>=1000))d.sure=false; // ohne Beschriftung und Vorwert: bestätigen lassen
   return d;
 }
 function ocrJob(fn){const p=ocrQueue.then(fn,fn);ocrQueue=p.catch(()=>{});return p}
@@ -164,10 +194,13 @@ async function ocrWhole(draft,statusEl,inputEl,ref){
   try{
     const im=await loadImg(draft.url);draft.img=im;
     const W=im.naturalWidth,H=im.naturalHeight,abort=()=>draft.tapped;
-    // ganzes Bild + mittlere Bildhälfte (dort ist der Zähler meistens)
+    // Ganzes Foto als Text lesen (sucht „Kilometerzähler … km“), danach reine Ziffern-Durchgänge
+    const hAt=w=>H*Math.min(1,w/W);
     const passes=[
-      {psm:"11",canvas:()=>prepCrop(im,W/2,H/2,W,H,Math.min(1600,H),false)},
-      {psm:"11",canvas:()=>prepCrop(im,W/2,H*0.55,W*0.6,H*0.6,Math.min(1400,H*0.6*1.5),false)}];
+      {text:true,psm:"3",canvas:()=>prepCrop(im,W/2,H/2,W,H,hAt(1000),0,25)},
+      {text:true,psm:"11",canvas:()=>prepCrop(im,W/2,H/2,W,H,hAt(1000),0,25)},
+      {text:true,psm:"3",canvas:()=>prepCrop(im,W/2,H/2,W,H,hAt(1500),0,35)},
+      {psm:"11",canvas:()=>prepCrop(im,W/2,H/2,W,H,hAt(1600),0)}];
     const hit=await ocrJob(()=>runPasses(im,passes,ref,abort,true));
     if(draft.tapped)return;
     if(hit&&hit.sure)showResult(hit,statusEl,inputEl,false);
@@ -181,10 +214,10 @@ async function ocrTap(draft,fx,fy,statusEl,inputEl,ref){
   try{
     const im=draft.img||await loadImg(draft.url);draft.img=im;
     const W=im.naturalWidth,H=im.naturalHeight,cx=fx*W,cy=fy*H,base=Math.min(W,H);
-    const passes=[];
+    const passes=[{text:true,psm:"6",canvas:()=>prepCrop(im,cx,cy,base*0.6,base*0.2,160,0,30)}];
     for(const [wf,hf] of [[0.45,0.13],[0.6,0.17],[0.32,0.10]])
-      for(const [th,tk,psm] of [[100,0,"7"],[100,1,"7"],[140,0,"13"],[70,1,"7"],[140,2,"7"],[100,0,"6"]]){
-        const cw=base*wf,ch=base*hf;passes.push({psm,canvas:()=>prepCrop(im,cx,cy,cw,ch,th,tk)});
+      for(const [th,tk,psm,lr] of [[100,0,"7",0],[100,0,"7",30],[100,1,"7",0],[140,0,"13",0],[70,1,"7",0],[140,0,"7",40],[140,2,"7",0],[100,0,"6",0]]){
+        const cw=base*wf,ch=base*hf;passes.push({psm,canvas:()=>prepCrop(im,cx,cy,cw,ch,th,tk,lr)});
       }
     const hit=await ocrJob(()=>runPasses(im,passes,ref,()=>draft.tapped!==my));
     if(draft.tapped!==my)return;
